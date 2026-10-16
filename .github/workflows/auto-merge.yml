@@ -38,11 +38,10 @@ jobs:
           done
           [ "$MERGEABLE" = "true" ] || fail "PR belum mergeable (status=$MERGEABLE, kemungkinan conflict). Sinkronkan branch dengan main terbaru lalu push lagi."
 
-          ALLOWED=""
-          if [[ "$AUTHOR" =~ ^2306[0-9]{8}$ ]]; then
-            ALLOWED="$AUTHOR"
-          else
-            echo "WARNING: author $AUTHOR bukan pola NIM, cek folder-sendiri nonaktif"
+          AUTHOR_NIM=$(tr -cs '0-9' '\n' <<<"$AUTHOR" | grep -E '^2306[0-9]{7,}$' | head -n1 || true)
+          ALLOWED="$AUTHOR_NIM"
+          if [ -z "$ALLOWED" ]; then
+            echo "WARNING: author $AUTHOR tidak memuat NIM, cek folder-sendiri nonaktif"
           fi
 
           FILES_TSV=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" \
@@ -115,8 +114,9 @@ jobs:
             echo "PR sudah $STATE, skip."
             exit 0
           fi
-          if [[ ! "$AUTHOR" =~ ^2306[0-9]{8}$ ]] && [ "$HAS_LABEL" != "true" ]; then
-            echo "Skip: author $AUTHOR bukan pola NIM dan tanpa label auto-merge."
+          AUTHOR_NIM=$(tr -cs '0-9' '\n' <<<"$AUTHOR" | grep -E '^2306[0-9]{7,}$' | head -n1 || true)
+          if [ -z "$AUTHOR_NIM" ] && [ "$HAS_LABEL" != "true" ]; then
+            echo "Skip: login $AUTHOR tidak memuat NIM dan tanpa label auto-merge."
             exit 0
           fi
 
