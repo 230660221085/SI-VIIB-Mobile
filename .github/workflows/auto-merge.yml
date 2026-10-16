@@ -2,23 +2,21 @@ name: Auto-merge student PR
 
 on:
   pull_request_target:
-    types: [labeled]
+    types: [opened, synchronize, reopened, labeled]
     branches: [main]
 
 permissions:
   contents: write
   pull-requests: write
 
-concurrency:
-  group: auto-merge-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
-
 jobs:
-  guard-and-merge:
-    if: github.event.label.name == 'auto-merge'
+  guard:
     runs-on: ubuntu-latest
+    concurrency:
+      group: guard-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     steps:
-      - name: Safety check lalu merge
+      - name: Safety check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -31,62 +29,105 @@ jobs:
           fail() { FAIL_MSG="${FAIL_MSG}
           - $1"; }
 
-          if [ "$BASE_REF" != "main" ]; then
-            fail "base branch harus main, bukan $BASE_REF"
-          fi
+          [ "${BASE_REF:-}" = "main" ] || fail "base branch harus main, bukan ${BASE_REF:-?}"
 
-          MERGEABLE=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .mergeable)
-          if [ "$MERGEABLE" = "false" ]; then
-            fail "ada merge conflict dengan main"
-          fi
+          MERGEABLE="unknown"
+          for _ in $(seq 1 12); do
+            MERGEABLE=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.mergeable // "unknown"')
+            case "$MERGEABLE" in true|false) break ;; *) sleep 10 ;; esac
+          done
+          [ "$MERGEABLE" = "true" ] || fail "PR belum mergeable (status=$MERGEABLE, kemungkinan conflict). Sinkronkan branch dengan main terbaru lalu push lagi."
 
           ALLOWED=""
-          if [[ "$AUTHOR" =~ ^[0-9]{11,12}$ ]]; then
+          if [[ "$AUTHOR" =~ ^2306[0-9]{8}$ ]]; then
             ALLOWED="$AUTHOR"
           else
-            echo "WARNING: login $AUTHOR bukan NIM, aturan folder sendiri tidak aktif"
+            echo "WARNING: author $AUTHOR bukan pola NIM, cek folder-sendiri nonaktif"
           fi
 
-          FILES=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" \
-            --jq '.[] | [.status, .filename, (.previous_filename // "")] | @tsv')
+          FILES_TSV=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" \
+            --jq '.[] | [.status, .filename, (.previous_filename // ""), .deletions, .additions] | @tsv')
 
-          TOTAL_FILES=$(grep -cve '^\s*$' <<<"$FILES" || true)
+          TOTAL_FILES=$(grep -cve '^[[:space:]]*$' <<<"$FILES_TSV" || true)
+          if [ "$TOTAL_FILES" -eq 0 ]; then
+            fail "PR tidak membawa perubahan file"
+          fi
           if [ "$TOTAL_FILES" -gt 200 ]; then
-            fail "PR terlalu besar ($TOTAL_FILES file), batas auto-merge 200 file"
+            fail "PR terlalu besar ($TOTAL_FILES file, batas 200)"
           fi
 
-          while IFS=$'\t' read -r status filename prev; do
-            [ -z "${status:-}" ] && continue
+          TOTAL_DEL=$(awk -F'\t' '{d+=$4} END {print d+0}' <<<"$FILES_TSV")
+          if [ "$TOTAL_DEL" -gt 500 ]; then
+            fail "total $TOTAL_DEL baris terhapus (>500), perlu review manual"
+          fi
 
+          while IFS=$'\t' read -r status filename prev _del _add; do
+            [ -n "${status:-}" ] || continue
             if [ "$status" = "removed" ]; then
               fail "menghapus file: $filename"
             fi
-
             case "$filename" in
-              README.md|.gitignore|.github/*)
-                fail "menyentuh file terlindungi repo: $filename"
-                ;;
+              README.md|.gitignore|.github/*) fail "menyentuh file lindung repo: $filename" ;;
             esac
-
             for p in "$filename" ${prev:+"$prev"}; do
-              topdir=$(printf '%s' "$p" | cut -d/ -f1)
-              topnims=$(grep -oE '2306[0-9]{8,}' <<<"$topdir" | sort -u || true)
-              for nim in $topnims; do
+              nims=$(tr -cs '0-9' '\n' <<<"$p" | grep -E '^2306[0-9]{7,}$' | sort -u || true)
+              for nim in $nims; do
                 if [ -n "$ALLOWED" ] && [ "$nim" != "$ALLOWED" ]; then
-                  fail "menyentuh folder mahasiswa lain ($nim): $p"
+                  fail "menyentuh data mahasiswa lain ($nim): $p"
                 fi
               done
             done
-          done <<<"$FILES"
+          done <<<"$FILES_TSV"
+
+          OLD_IDS=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.user.login=="github-actions[bot]") | select((.body // "") | contains("Auto-merge")) | .id' || true)
+          for cid in $OLD_IDS; do
+            gh api -X DELETE "repos/$REPO/issues/comments/$cid" --silent >/dev/null 2>&1 || true
+          done
 
           if [ -n "$FAIL_MSG" ]; then
-            echo "Safety check GAGAL:"
-            echo "$FAIL_MSG"
             gh pr comment "$PR_NUMBER" --repo "$REPO" \
-              --body "❌ Auto-merge ditolak, minta review manual:$FAIL_MSG"
+              --body "❌ Auto-merge ditolak, perlu review manual:$FAIL_MSG" >/dev/null
+            echo "Safety check GAGAL:$FAIL_MSG"
             exit 1
           fi
+          echo "Safety check LOLOS ($TOTAL_FILES file, $TOTAL_DEL baris hapus)."
 
-          echo "Safety check lolos. Merge PR #$PR_NUMBER..."
-          gh pr merge "$PR_NUMBER" --repo "$REPO" --merge --delete-branch=false
-          echo "PR #$PR_NUMBER merged."
+  auto-merge:
+    needs: guard
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    concurrency:
+      group: auto-merge-main-merge
+      cancel-in-progress: false
+    steps:
+      - name: Merge PR yang lolos guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'auto-merge') }}
+        run: |
+          set -euo pipefail
+          STATE=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state --jq .state)
+          if [ "$STATE" != "OPEN" ]; then
+            echo "PR sudah $STATE, skip."
+            exit 0
+          fi
+          if [[ ! "$AUTHOR" =~ ^2306[0-9]{8}$ ]] && [ "$HAS_LABEL" != "true" ]; then
+            echo "Skip: author $AUTHOR bukan pola NIM dan tanpa label auto-merge."
+            exit 0
+          fi
+
+          gh pr merge "$PR_NUMBER" --repo "$REPO" --merge || true
+
+          STATE=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state --jq .state)
+          if [ "$STATE" = "MERGED" ]; then
+            gh pr comment "$PR_NUMBER" --repo "$REPO" \
+              --body "✅ Auto-merge sukses, safety check lolos." >/dev/null || true
+            echo "PR #$PR_NUMBER merged."
+          else
+            echo "::error::Gagal merge PR #$PR_NUMBER (state=$STATE)"
+            exit 1
+          fi
