@@ -45,20 +45,20 @@
       <sub>230660221001</sub>
     </td>
     <td align="center">
-      <a href="https://github.com/230660221008">
-        <img src="https://avatars.githubusercontent.com/u/202236808?v=4&s=200" width="100px;" alt="230660221008"/><br>
-        <sub><b>Nazwa Umaira Nanindia Ramdhani</b></sub>
-      </a><br>
-      <sub>230660221008</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center">
       <a href="https://github.com/230660221030">
         <img src="https://avatars.githubusercontent.com/u/202513407?v=4&s=200" width="100px;" alt="230660221030"/><br>
         <sub><b>Syifa Nur Insani</b></sub>
       </a><br>
       <sub>230660221030</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <a href="https://github.com/230660221008">
+        <img src="https://avatars.githubusercontent.com/u/202236808?v=4&s=200" width="100px;" alt="230660221008"/><br>
+        <sub><b>Nazwa Umaira Nanindia Ramdhani</b></sub>
+      </a><br>
+      <sub>230660221008</sub>
     </td>
     <td align="center">
       <a href="https://github.com/230660221126">
